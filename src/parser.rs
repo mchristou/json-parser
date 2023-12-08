@@ -43,7 +43,7 @@ impl<'a> JsonParser<'a> {
             Some('{') => self.parse_object(),
             Some('[') => self.parse_array(),
             Some('"') => self.parse_string(),
-            Some(c) if c.is_digit(10) || c == '-' => self.parse_number(),
+            Some(c) if c.is_ascii_digit() || c == '-' => self.parse_number(),
             Some('t') | Some('f') => self.parse_boolean(),
             Some('n') => self.parse_null(),
             _ => Err("Unexpected charachter"),
@@ -59,20 +59,29 @@ impl<'a> JsonParser<'a> {
 
             let key = match self.parse_string()? {
                 JsonValue::String(val) => val,
-                _ => return Err("Unexpected charachter"),
+                _ => {
+                    return Err("Unexpected charachter");
+                }
             };
+
+            // Cases when key is empty
+            if key.is_empty() {
+                self.consume('"');
+            }
 
             self.consume_whitespace();
 
             if self.json_string.chars().nth(self.index) != Some(':') {
                 return Err("Expected ':'");
             }
-
             self.index += 1; // Consume ':'
-            let value = self.parse_value()?;
-            result.push((key, value));
+            self.consume_whitespace();
 
+            let value = self.parse_value()?;
+
+            result.push((key, value));
             self.consume('"');
+
             self.consume_whitespace();
 
             if self.json_string.chars().nth(self.index) == Some(',') {
@@ -131,9 +140,9 @@ impl<'a> JsonParser<'a> {
         let mut has_dot = false;
 
         while let Some(c) = self.json_string.chars().nth(self.index) {
-            if c == '.' {
+            if c == '.' || c == 'e' {
                 has_dot = true;
-            } else if !c.is_digit(10) && c != 'e' && c != 'E' && c != '-' && c != '+' {
+            } else if !c.is_ascii_digit() && c != 'e' && c != 'E' && c != '-' && c != '+' {
                 break;
             }
 
@@ -141,6 +150,7 @@ impl<'a> JsonParser<'a> {
         }
 
         let number_str = &self.json_string[start..self.index];
+        println!("number_str: {number_str}");
 
         if has_dot {
             match number_str.parse::<f64>() {
@@ -159,12 +169,23 @@ impl<'a> JsonParser<'a> {
         self.index += 1; // Consume '"'
         self.consume_whitespace();
         let start = self.index;
+        let mut escape_char = vec![];
 
         while let Some(c) = self.json_string.chars().nth(self.index) {
             self.index += 1;
-            self.print_next_char();
-            if c == '"' {
-                println!("returning");
+
+            if c == '\\' {
+                escape_char.push(self.index);
+                self.index += 1;
+                continue;
+            }
+
+            if c == '"' && !escape_char.contains(&(self.index - 1)) {
+                if !escape_char.is_empty() {
+                    let result =
+                        self.filter_escape_charachters((start, self.index - 1), escape_char);
+                    return Ok(JsonValue::String(result));
+                }
                 return Ok(JsonValue::String(
                     self.json_string[start..self.index - 1].to_string(),
                 ));
@@ -172,6 +193,26 @@ impl<'a> JsonParser<'a> {
         }
 
         Err("Unterminated string")
+    }
+
+    fn filter_escape_charachters(
+        &self,
+        input_range: (usize, usize),
+        indices: Vec<usize>,
+    ) -> String {
+        // Filter out indices to remove from the substring range
+        let range = input_range.0..input_range.1;
+
+        // Use a separate iterator to avoid modifying the original indices vector
+        let filtered_indices: Vec<usize> = range.filter(|&i| !indices.contains(&i)).collect();
+
+        // Extract the substring without the excluded indices
+        let modified_substring: String = filtered_indices
+            .iter()
+            .map(|&i| self.json_string.chars().nth(i).unwrap())
+            .collect();
+
+        modified_substring
     }
 
     fn parse_null(&mut self) -> Result<JsonValue, &'static str> {
@@ -198,10 +239,5 @@ impl<'a> JsonParser<'a> {
             }
             self.index += 1;
         }
-    }
-
-    fn print_next_char(&self) {
-        let next_char = self.json_string.chars().nth(self.index);
-        println!(" {next_char:?}");
     }
 }
