@@ -24,6 +24,8 @@ impl<'a> JsonParser<'a> {
     pub fn parse(&mut self) -> Result<JsonValue, &'static str> {
         self.consume_whitespace();
 
+        self.sanity_check()?;
+
         let result = self.parse_value()?;
         self.consume_whitespace();
 
@@ -51,7 +53,7 @@ impl<'a> JsonParser<'a> {
     }
 
     fn parse_object(&mut self) -> Result<JsonValue, &'static str> {
-        self.index += 1; // Consume '{'
+        self.consume('{');
         let mut result = Vec::new();
 
         while self.json_string.chars().nth(self.index) != Some('}') {
@@ -71,10 +73,8 @@ impl<'a> JsonParser<'a> {
 
             self.consume_whitespace();
 
-            if self.json_string.chars().nth(self.index) != Some(':') {
-                return Err("Expected ':'");
-            }
-            self.index += 1; // Consume ':'
+            self.expect(':')?;
+            self.consume(':');
             self.consume_whitespace();
 
             let value = self.parse_value()?;
@@ -94,12 +94,13 @@ impl<'a> JsonParser<'a> {
             self.consume_whitespace();
         }
 
-        self.index += 1; // Consume '}'
+        self.consume('}');
+
         Ok(JsonValue::Object(result))
     }
 
     fn parse_array(&mut self) -> Result<JsonValue, &'static str> {
-        self.index += 1; // Consume '['
+        self.consume('[');
         let mut result = Vec::new();
 
         while self.json_string.chars().nth(self.index) != Some(']') {
@@ -109,13 +110,13 @@ impl<'a> JsonParser<'a> {
             self.consume_whitespace();
 
             if self.json_string.chars().nth(self.index) == Some(',') {
-                self.index += 1; // Consume ','
+                self.consume(',');
             } else if self.json_string.chars().nth(self.index) != Some(']') {
                 return Err("Expected ']' or ','");
             }
         }
 
-        self.index += 1; // Consume ']'
+        self.consume(']'); // Consume ']'
         Ok(JsonValue::Array(result))
     }
 
@@ -125,10 +126,10 @@ impl<'a> JsonParser<'a> {
         let next_char = self.json_string.chars().nth(self.index);
 
         if next_char == Some('t') {
-            self.index += 4; // Consume 'true'
+            self.index += 4;
             Ok(JsonValue::Boolean(true))
         } else if next_char == Some('f') {
-            self.index += 5; // Consume 'false'
+            self.index += 5;
             Ok(JsonValue::Boolean(false))
         } else {
             Err("Invalid boolean value")
@@ -150,7 +151,6 @@ impl<'a> JsonParser<'a> {
         }
 
         let number_str = &self.json_string[start..self.index];
-        println!("number_str: {number_str}");
 
         if has_dot {
             match number_str.parse::<f64>() {
@@ -158,6 +158,10 @@ impl<'a> JsonParser<'a> {
                 Err(_) => Err("Invalid number"),
             }
         } else {
+            if self.json_string.chars().nth(start) == Some('0') && number_str.len() > 1 {
+                return Err("Cant start with 0");
+            }
+
             match number_str.parse::<i64>() {
                 Ok(num) => Ok(JsonValue::Number(num as f64)),
                 Err(_) => Err("Invalid number"),
@@ -166,26 +170,32 @@ impl<'a> JsonParser<'a> {
     }
 
     fn parse_string(&mut self) -> Result<JsonValue, &'static str> {
-        self.index += 1; // Consume '"'
+        self.consume('"');
         self.consume_whitespace();
         let start = self.index;
-        let mut escape_char = vec![];
 
         while let Some(c) = self.json_string.chars().nth(self.index) {
             self.index += 1;
 
             if c == '\\' {
-                escape_char.push(self.index);
+                let next_charachter = self.json_string.chars().nth(self.index);
+                if !Self::is_valid_escape(next_charachter.unwrap()) {
+                    return Err("Invalid escape_char");
+                }
                 self.index += 1;
+
                 continue;
             }
 
-            if c == '"' && !escape_char.contains(&(self.index - 1)) {
-                if !escape_char.is_empty() {
-                    let result =
-                        self.filter_escape_charachters((start, self.index - 1), escape_char);
-                    return Ok(JsonValue::String(result));
-                }
+            if c == '\t' {
+                return Err("Tab character in string");
+            }
+
+            if c == '\n' {
+                return Err("Line break in string");
+            }
+
+            if c == '"' {
                 return Ok(JsonValue::String(
                     self.json_string[start..self.index - 1].to_string(),
                 ));
@@ -195,31 +205,15 @@ impl<'a> JsonParser<'a> {
         Err("Unterminated string")
     }
 
-    fn filter_escape_charachters(
-        &self,
-        input_range: (usize, usize),
-        indices: Vec<usize>,
-    ) -> String {
-        // Filter out indices to remove from the substring range
-        let range = input_range.0..input_range.1;
-
-        // Use a separate iterator to avoid modifying the original indices vector
-        let filtered_indices: Vec<usize> = range.filter(|&i| !indices.contains(&i)).collect();
-
-        // Extract the substring without the excluded indices
-        let modified_substring: String = filtered_indices
-            .iter()
-            .map(|&i| self.json_string.chars().nth(i).unwrap())
-            .collect();
-
-        modified_substring
+    fn is_valid_escape(c: char) -> bool {
+        matches!(c, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u')
     }
 
     fn parse_null(&mut self) -> Result<JsonValue, &'static str> {
         let next_char = self.json_string.chars().nth(self.index);
 
         if next_char == Some('n') {
-            self.index += 4; // Consume 'null'
+            self.index += 4;
             Ok(JsonValue::Null)
         } else {
             Err("Invalid null value")
@@ -238,6 +232,33 @@ impl<'a> JsonParser<'a> {
                 break;
             }
             self.index += 1;
+        }
+    }
+
+    fn expect(&mut self, expected: char) -> Result<(), &'static str> {
+        if self.json_string.chars().nth(self.index) == Some(expected) {
+            Ok(())
+        } else {
+            Err("Expected character not found")
+        }
+    }
+
+    fn sanity_check(&self) -> Result<(), &'static str> {
+        let first_char = match self.json_string.chars().next() {
+            Some(c) => c,
+            None => return Err("Invalid Input"),
+        };
+
+        match first_char {
+            '{' | '[' => {
+                // Check for trailing commas
+                if self.json_string.ends_with(",}") || self.json_string.ends_with(",]") {
+                    return Err("Trailing comma detected");
+                }
+
+                Ok(())
+            }
+            _ => Err("It is not object or array"),
         }
     }
 }

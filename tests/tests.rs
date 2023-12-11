@@ -1,5 +1,3 @@
-use json_parser::JsonParser;
-
 #[macro_export]
 macro_rules! assert_parser {
     ($path:expr, success) => {{
@@ -9,7 +7,6 @@ macro_rules! assert_parser {
 
         let result = parser.parse();
         assert!(result.is_ok());
-        println!("{:?}", result.unwrap());
     }};
     ($path:expr, fail) => {{
         let content = fs::read_to_string($path).unwrap();
@@ -58,6 +55,11 @@ mod tests {
         assert_parser!("tests/inputs/pass2.json", success);
         assert_parser!("tests/inputs/pass3.json", success);
 
-        assert_parser!("tests/inputs/fail1.json", fail);
+        for i in 1..=33 {
+            let path = format!("tests/inputs/fail{i}.json");
+            if std::path::Path::new(&path).exists() {
+                assert_parser!(path, fail);
+            }
+        }
     }
 }
